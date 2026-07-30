@@ -20,6 +20,7 @@ from src.utils import (
     AppError,
     build_document_id,
     build_source_label,
+    export_chat_markdown,
     save_uploaded_pdf,
     serialize_documents,
     sort_serialized_sources,
@@ -241,6 +242,8 @@ def init_session_state() -> None:
         "last_answer": "",
         "status_message": "",
         "selected_upload_name": None,
+        "pending_delete_id": None,
+        "confirm_delete_all": False,
         "cfg_top_k": config.qa_k,
         "cfg_search_type": "MMR",
         "settings_temperature": 0.0,
@@ -641,6 +644,7 @@ def ask_question(question: str) -> None:
             k=st.session_state.cfg_top_k,
             fetch_k=max(config.qa_fetch_k, st.session_state.cfg_top_k * 2),
             lambda_mult=0.7 if search_type == "MMR" else 1.0,
+            search_type=search_type,
         )
         if st.session_state.cfg_rerank:
             retrieved = sorted(retrieved, key=lambda d: len(d.page_content), reverse=True)
@@ -702,7 +706,7 @@ def render_chat_page() -> None:
     with metrics[3]:
         render_metric_card("Queries", str(len(st.session_state.query_log)), "This session")
 
-    action_cols = st.columns([1, 1, 1, 2])
+    action_cols = st.columns([1, 1, 1, 1, 2])
     with action_cols[0]:
         if st.button("Upload documents", key="hero_upload", use_container_width=True):
             switch_page("Documents")
@@ -712,10 +716,19 @@ def render_chat_page() -> None:
             clear_chat_history()
             st.rerun()
     with action_cols[2]:
+        if st.button("Generate summary", key="hero_summary", use_container_width=True):
+            try:
+                generate_summary_action()
+                st.rerun()
+            except AppError as exc:
+                st.error(str(exc))
+            except Exception as exc:
+                st.error(f"Unexpected error while generating summary: {exc}")
+    with action_cols[3]:
         if st.button("View sources", key="hero_sources", use_container_width=True):
             switch_page("Sources")
             st.rerun()
-    with action_cols[3]:
+    with action_cols[4]:
         st.markdown("<span class='mini-chip'>Upload knowledge</span><span class='mini-chip'>Retrieve context</span><span class='mini-chip'>Ground answers</span>", unsafe_allow_html=True)
 
     st.markdown("<div style='height:0.8rem;'></div>", unsafe_allow_html=True)
@@ -823,7 +836,23 @@ def render_documents_page(indexed_documents: list[dict[str, Any]]) -> None:
         render_empty("📚", "No indexed documents yet", "Upload a PDF to create your first persistent knowledge base.")
         return
 
-    for idx, row in enumerate(indexed_documents):
+    document_query = st.text_input(
+        "Search indexed documents",
+        placeholder="Filter by filename or document ID…",
+        key="document_search",
+    ).strip().lower()
+    filtered_documents = [
+        row
+        for row in indexed_documents
+        if not document_query
+        or document_query in str(row.get("source_filename", "")).lower()
+        or document_query in str(row.get("document_id", "")).lower()
+    ]
+    if not filtered_documents:
+        render_empty("🔎", "No matching documents", "Try a different filename or document ID.")
+        return
+
+    for idx, row in enumerate(filtered_documents):
         doc_id = row.get("document_id", "")
         st.markdown("<div class='source-card'>", unsafe_allow_html=True)
         st.markdown(
@@ -861,8 +890,19 @@ def render_documents_page(indexed_documents: list[dict[str, Any]]) -> None:
                 except Exception as exc:
                     st.error(f"Failed to activate document: {exc}")
         with cols[3]:
-            if st.button("Delete", key=f"delete_doc_{idx}", use_container_width=True):
-                delete_index(doc_id)
+            if st.session_state.pending_delete_id == doc_id:
+                if st.button("Confirm delete", key=f"confirm_delete_doc_{doc_id}", type="primary", use_container_width=True):
+                    delete_index(doc_id)
+                    st.session_state.pending_delete_id = None
+                    st.rerun()
+            elif st.button("Delete", key=f"delete_doc_{doc_id}", use_container_width=True):
+                st.session_state.pending_delete_id = doc_id
+                set_status("Click Confirm delete to remove this document and its index.")
+                st.rerun()
+        if st.session_state.pending_delete_id == doc_id:
+            if st.button("Cancel deletion", key=f"cancel_delete_doc_{doc_id}"):
+                st.session_state.pending_delete_id = None
+                set_status("Deletion cancelled.")
                 st.rerun()
         st.markdown("</div>", unsafe_allow_html=True)
 
@@ -957,13 +997,27 @@ def render_settings_page(env_status: dict[str, bool]) -> None:
             clear_chat_history()
             st.rerun()
     with action_cols[2]:
-        export_text = st.session_state.last_answer or st.session_state.summary_markdown or "No answer generated yet."
+        export_text = export_chat_markdown(
+            st.session_state.chat_messages,
+            document_name=st.session_state.active_source_filename,
+        )
         st.download_button("Export conversation", export_text, file_name="knowledge_studio_export.md", key="dl_conversation", use_container_width=True)
     with action_cols[3]:
-        if st.button("Delete all indexes", key="delete_all_indexes", use_container_width=True):
-            for row in list_indexed_documents(config.vectordb_dir):
-                delete_index(row.get("document_id", ""))
-            set_status("Deleted all indexes.")
+        if st.session_state.confirm_delete_all:
+            if st.button("Confirm delete all", key="confirm_delete_all_indexes", type="primary", use_container_width=True):
+                for row in list_indexed_documents(config.vectordb_dir):
+                    delete_index(row.get("document_id", ""))
+                st.session_state.confirm_delete_all = False
+                set_status("Deleted all indexes.")
+                st.rerun()
+        elif st.button("Delete all indexes", key="delete_all_indexes", use_container_width=True):
+            st.session_state.confirm_delete_all = True
+            set_status("Click Confirm delete all to permanently remove every saved index.")
+            st.rerun()
+    if st.session_state.confirm_delete_all:
+        if st.button("Cancel delete all", key="cancel_delete_all_indexes"):
+            st.session_state.confirm_delete_all = False
+            set_status("Bulk deletion cancelled.")
             st.rerun()
 
     st.markdown("<div style='height:0.8rem;'></div>", unsafe_allow_html=True)

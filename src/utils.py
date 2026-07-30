@@ -149,6 +149,36 @@ def serialize_documents(documents: Sequence[Document]) -> list[dict[str, Any]]:
     return serialized
 
 
+def export_chat_markdown(
+    messages: Sequence[dict[str, Any]],
+    *,
+    document_name: str | None = None,
+) -> str:
+    title = "# Knowledge Studio conversation"
+    metadata = f"\n\n**Document:** {document_name}" if document_name else ""
+    if not messages:
+        return f"{title}{metadata}\n\n_No conversation yet._\n"
+
+    sections = [f"{title}{metadata}"]
+    for message in messages:
+        role = str(message.get("role", "assistant")).strip().lower()
+        heading = "You" if role == "user" else "Assistant"
+        content = str(message.get("content", "")).strip() or "_Empty message_"
+        sections.append(f"## {heading}\n\n{content}")
+
+        sources = message.get("sources") or []
+        if sources:
+            labels = [
+                build_source_label(dict(source.get("metadata") or {}))
+                for source in sources
+            ]
+            sections.append(
+                "**Sources:**\n\n" + "\n".join(f"- {label}" for label in labels)
+            )
+
+    return "\n\n".join(sections) + "\n"
+
+
 def sort_serialized_sources(
     serialized_documents: Sequence[dict[str, Any]],
 ) -> list[dict[str, Any]]:
