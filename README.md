@@ -62,3 +62,8 @@ GROQ_API_KEY=your_real_groq_api_key
 - Other file types are surfaced in the UI for future extension.
 - Destructive index deletion actions require confirmation.
 - The UI styling is adapted from the uploaded `knowledge_studio_ui.html` design reference.
+
+
+## Code learning guide
+
+[Read the code walkthrough and interview questions](docs/INTERVIEW_GUIDE.md).
